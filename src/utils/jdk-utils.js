@@ -9,7 +9,8 @@ const axios = require('axios');
 const { log, logError } = require('./logger');
 
 const JDK_PATH = path.join(__dirname, '../../jdk');
-const ADOPTIUM_JDK_URL = "https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest";
+const ADOPTIUM_API_BASE_URL = 'https://api.adoptium.net/v3/binary/latest';
+const JDK_VERSION = '21';
 
 function clearOldJdkVersions() {
     if (fs.existsSync(JDK_PATH)) {
@@ -37,27 +38,27 @@ function getOsArchitecture() {
     return { os, arch };
 }
 
+function getJdkArchiveExtension(os) {
+    return os === 'windows' ? '.zip' : '.tar.gz';
+}
+
+function getAdoptiumJdkUrl() {
+    const { os, arch } = getOsArchitecture();
+    return {
+        os,
+        arch,
+        url: `${ADOPTIUM_API_BASE_URL}/${JDK_VERSION}/ga/${os}/${arch}/jre/hotspot/normal/eclipse`
+    };
+}
+
 async function downloadAndExtractJDK() {
     log("📦 Installing OpenJDK...");
 
     // Ensure the JDK directory exists before downloading
     fs.ensureDirSync(JDK_PATH);
 
-    const response = await axios.get(ADOPTIUM_JDK_URL);
-    const assets = response.data.assets;
-    const { os, arch } = getOsArchitecture();
-
-    const jdkAsset = assets.find(a =>
-        a.name.includes(`jre_${arch}_${os}`) &&
-        (a.name.endsWith('.zip') || a.name.endsWith('.tar.gz'))
-    );
-
-    if (!jdkAsset) {
-        throw new Error(`No matching JDK binary found for OS: ${os}, Arch: ${arch}`);
-    }
-
-    const jdkUrl = jdkAsset.browser_download_url;
-    const jdkFile = path.join(JDK_PATH, path.basename(jdkUrl));
+    const { os, arch, url: jdkUrl } = getAdoptiumJdkUrl();
+    const jdkFile = path.join(JDK_PATH, `OpenJDK${JDK_VERSION}U-jre_${arch}_${os}${getJdkArchiveExtension(os)}`);
 
     log(`⬇ Downloading OpenJDK from: ${jdkUrl}`);
 
@@ -133,10 +134,19 @@ function getJavaExecutable() {
         : path.join(binPath, "java");
 }
 
+function isJdkInstalled() {
+    try {
+        return fs.existsSync(getJavaExecutable());
+    } catch (error) {
+        return false;
+    }
+}
+
 module.exports = {
     getOsArchitecture,
     downloadAndExtractJDK,
     clearOldJdkVersions,
     getJdkBinPath,       // ✅ Keeping the existing structure
-    getJavaExecutable    // ✅ Adding this function while keeping everything else
+    getJavaExecutable,   // ✅ Adding this function while keeping everything else
+    isJdkInstalled
 };
