@@ -10,39 +10,81 @@ const { log, logError } = require('./logger');
 
 const BIN_DIR = path.join(__dirname, '../../bin');
 const JAR_PATH = path.join(BIN_DIR, 'validator.jar');
-// Outburn's fork of the Validator Wrapper, supports skipping preset loading
-const GITHUB_API_URL = "https://api.github.com/repos/Outburn-IL/org.hl7.fhir.validator-wrapper/releases/latest";
-// Fallback to the original HAPI FHIR Validator Wrapper
-const GITHUB_API_FALLBACK = "https://api.github.com/repos/hapifhir/org.hl7.fhir.validator-wrapper/releases/latest";
+const GITHUB_BASE_URL = 'https://github.com';
+const VALIDATOR_REPOSITORIES = [
+    'Outburn-IL/org.hl7.fhir.validator-wrapper',
+    'hapifhir/org.hl7.fhir.validator-wrapper'
+];
 
 /**
- * Fetches the latest FHIR Validator JAR URL from GitHub Releases.
+ * Resolves the latest validator JAR URLs without calling the GitHub API.
  */
-async function getLatestValidatorJarUrl() {
-    let response;
-    try {
-        response = await axios.get(GITHUB_API_URL);
-    } catch (error) {
-        logError("❌ Failed to fetch Outburn's fork of the validator. Falling back to the original HAPI FHIR Validator Wrapper.");
-        response = await axios.get(GITHUB_API_FALLBACK);
-    }
-    
-    try {
-        log("🔎 Checking latest FHIR Validator release...");
-        
-        const assets = response.data.assets;
+async function getLatestValidatorJarUrls() {
+    log("🔎 Resolving latest FHIR Validator release...");
 
-        const jarAsset = assets.find(asset => asset.name.startsWith('validator') && asset.name.endsWith('.jar'));
-        if (!jarAsset) {
-            throw new Error("Validator CLI JAR not found in the latest release.");
+    let lastError;
+
+    for (const repository of VALIDATOR_REPOSITORIES) {
+        try {
+            const releaseTag = await getLatestReleaseTag(repository);
+            return await getReleaseJarUrls(repository, releaseTag);
+        } catch (error) {
+            lastError = error;
+            if (repository === VALIDATOR_REPOSITORIES[0]) {
+                logError("❌ Failed to resolve Outburn's latest validator release. Falling back to the original HAPI FHIR Validator Wrapper.");
+            }
         }
-
-        log(`✅ Latest Validator Version: ${response.data.tag_name}`);
-        return jarAsset.browser_download_url;
-    } catch (error) {
-        logError("❌ Failed to fetch the latest Validator release.");
-        throw error;
     }
+
+    throw lastError;
+}
+
+async function getLatestReleaseTag(repository) {
+    const latestReleaseUrl = `${GITHUB_BASE_URL}/${repository}/releases/latest`;
+    const response = await axios.head(latestReleaseUrl, {
+        maxRedirects: 0,
+        validateStatus: status => status >= 300 && status < 400
+    });
+
+    const location = response.headers.location;
+    if (!location) {
+        throw new Error(`Missing redirect location for ${repository} latest release.`);
+    }
+
+    const releasePath = new URL(location, GITHUB_BASE_URL).pathname;
+    const match = releasePath.match(/\/releases\/tag\/(.+)$/);
+
+    if (!match) {
+        throw new Error(`Could not determine the latest release tag for ${repository}.`);
+    }
+
+    return decodeURIComponent(match[1]);
+}
+
+async function getReleaseJarUrls(repository, releaseTag) {
+    const expandedAssetsUrl = `${GITHUB_BASE_URL}/${repository}/releases/expanded_assets/${encodeURIComponent(releaseTag)}`;
+    const response = await axios.get(expandedAssetsUrl);
+    const jarUrls = [...new Set(
+        [...response.data.matchAll(/href="([^"]+\/releases\/download\/[^"]+\.jar)"/gi)]
+            .map(match => new URL(match[1], GITHUB_BASE_URL).toString())
+    )];
+
+    if (jarUrls.length === 0) {
+        throw new Error(`No validator JAR assets found for ${repository} release ${releaseTag}.`);
+    }
+
+    return jarUrls;
+}
+
+async function downloadFile(url, destinationPath) {
+    const writer = fs.createWriteStream(destinationPath);
+    const response = await axios({ url, responseType: 'stream' });
+
+    return new Promise((resolve, reject) => {
+        response.data.pipe(writer);
+        writer.on("finish", resolve);
+        writer.on("error", reject);
+    });
 }
 
 /**
@@ -56,23 +98,26 @@ async function downloadValidatorJar() {
         return;
     }
 
-    const jarUrl = await getLatestValidatorJarUrl();
-    log(`⬇ Downloading Validator JAR from: ${jarUrl}`);
+    const jarUrls = await getLatestValidatorJarUrls();
+    let lastError;
 
-    const writer = fs.createWriteStream(JAR_PATH);
-    const response = await axios({ url: jarUrl, responseType: 'stream' });
-
-    return new Promise((resolve, reject) => {
-        response.data.pipe(writer);
-        writer.on("finish", () => {
+    for (const [index, jarUrl] of jarUrls.entries()) {
+        try {
+            log(`⬇ Downloading Validator JAR from: ${jarUrl}`);
+            await downloadFile(jarUrl, JAR_PATH);
             log("✅ FHIR Validator JAR downloaded.");
-            resolve();
-        });
-        writer.on("error", (err) => {
-            logError(`❌ JAR download failed: ${err.message}`);
-            reject(err);
-        });
-    });
+            return;
+        } catch (error) {
+            lastError = error;
+            fs.removeSync(JAR_PATH);
+            if (index < jarUrls.length - 1) {
+                logError("❌ Failed to download the resolved validator asset. Trying the next available release asset.");
+            }
+        }
+    }
+
+    logError(`❌ JAR download failed: ${lastError.message}`);
+    throw lastError;
 }
 
 module.exports = {
