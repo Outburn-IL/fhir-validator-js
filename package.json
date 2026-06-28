@@ -1,6 +1,6 @@
 {
     "name": "fhir-validator-js",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "description": "A Node.js wrapper for the HL7 FHIR Validator",
     "main": "src/index.js",
     "homepage": "https://github.com/Outburn-IL/fhir-validator-js",
