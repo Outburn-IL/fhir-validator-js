@@ -2,7 +2,7 @@
  * © Copyright Outburn Ltd. 2025 All Rights Reserved
  *   Project name: FUME / FHIR Validator
  */
-const { downloadAndExtractJDK } = require('./utils/jdk-utils');
+const { downloadAndExtractJDK, isJdkInstalled } = require('./utils/jdk-utils');
 const { downloadValidatorJar } = require('./utils/file-utils'); // ✅ Import fix
 const { log, logError } = require('./utils/logger');
 const fs = require('fs-extra');
@@ -15,7 +15,7 @@ const JAR_PATH = path.join(BIN_DIR, 'validator.jar');
 async function setupIfNeeded() {
     log("🔧 Running setup...");
 
-    if (!fs.existsSync(JDK_PATH)) {
+    if (!isJdkInstalled()) {
         log("📦 Installing JDK...");
         await downloadAndExtractJDK();
     } else {
